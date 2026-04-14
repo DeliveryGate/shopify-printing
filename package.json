@@ -1,0 +1,13 @@
+{
+  "name": "vk-label-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "express": "^4.18.2",
+    "dotenv": "^16.4.5"
+  }
+}
