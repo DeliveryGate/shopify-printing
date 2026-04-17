@@ -213,6 +213,17 @@ app.get("/jobs", async (req, res) => {
   const jobs = await sql`SELECT * FROM print_jobs ORDER BY created_at DESC LIMIT 50`;
   res.json(jobs);
 });
+// Test endpoint — creates a fake order to test printing
+app.get("/test", async (req, res) => {
+  const testItems = [
+    { name: "Chicken Bagel Platter", quantity: 3, allergen_text: "CONTAINS: Gluten, Milk, Sulphites" },
+    { name: "Beetroot Brownies", quantity: 2, allergen_text: "No listed allergens" },
+  ];
+  const orderNumber = `#TEST-${Date.now().toString().slice(-4)}`;
+  const orderDate = new Date().toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" });
+  await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${orderNumber}, ${orderDate}, ${JSON.stringify(testItems)})`;
+  res.json({ queued: true, order: orderNumber, labels: 5, message: "Test job created — watch the phone!" });
+});
 
 // ── Start ─────────────────────────────────────────────────────
 setupDb().then(() => {
