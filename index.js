@@ -35,7 +35,7 @@ const ALLERGEN_MATRIX = {
   "Beetroot Quinoa Tabbouleh":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Berry Quinoa Tabbouleh":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Blue Chia Pudding":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
-  "Brazilian Cajun Jackfruit Salpicão":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
+  "Brazilian Cajun Jackfruit Salpicao":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Brazilian Salpicao Chicken Platter":{celery:0,gluten:0,crustaceans:0,eggs:1,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Chicken & Sundried Tomato Quiche":{celery:0,gluten:1,crustaceans:0,eggs:1,fish:0,lupin:0,milk:1,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Chicken Bagel Platter":{celery:0,gluten:1,crustaceans:0,eggs:0,fish:0,lupin:0,milk:1,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:1},
@@ -51,7 +51,7 @@ const ALLERGEN_MATRIX = {
   "Fish Sandwich Platter":{celery:0,gluten:1,crustaceans:0,eggs:1,fish:1,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:1,sulphites:0},
   "Fusilli Verdi Pesto & Sundried Tomato Salad":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:1,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Gluten Free Avocado Toast Platter":{celery:0,gluten:0,crustaceans:0,eggs:1,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
-  "Gluten Free Bagel Platter (6)":{celery:0,gluten:0,crustaceans:0,eggs:1,fish:0,lupin:0,milk:0,mustard:1,molluscs:0,sesame:0,soya:1,sulphites:1},
+  "Gluten Free Bagel Platter":{celery:0,gluten:0,crustaceans:0,eggs:1,fish:0,lupin:0,milk:0,mustard:1,molluscs:0,sesame:0,soya:1,sulphites:1},
   "Gluten Free Fish Sandwich Platter":{celery:0,gluten:0,crustaceans:0,eggs:1,fish:1,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:1,sulphites:0},
   "Gluten Free Lemon & Poppyseed Cupcakes":{celery:0,gluten:0,crustaceans:0,eggs:0,fish:0,lupin:0,milk:1,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
   "Gluten Free Matcha & Raspberry Cookies":{celery:0,gluten:0,crustaceans:0,eggs:1,fish:0,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:1,sulphites:0},
@@ -97,7 +97,7 @@ function getAllergens(productName) {
 
 function getAllergenText(productName) {
   const matrix = getAllergens(productName);
-  if (!matrix) return "Allergen info unavailable — check matrix";
+  if (!matrix) return "Allergen info unavailable";
   const contains = ALLERGEN_KEYS.filter(k => matrix[k]).map(k => ALLERGEN_LABELS[k]);
   return contains.length > 0 ? `CONTAINS: ${contains.join(", ")}` : "No listed allergens";
 }
@@ -153,7 +153,7 @@ app.post("/jobs/:id/done", async (req, res) => {
 app.post("/jobs/:id/reset", async (req, res) => {
   if (req.headers["x-agent-secret"] !== process.env.AGENT_SECRET) return res.status(401).json({ error: "Unauthorized" });
   await sql`UPDATE print_jobs SET status = 'pending' WHERE id = ${req.params.id}`;
-  res.json({ ok: true, message: "Job reset to pending" });
+  res.json({ ok: true });
 });
 
 app.get("/jobs", async (req, res) => {
@@ -164,21 +164,22 @@ app.get("/jobs", async (req, res) => {
 
 app.get("/test", async (req, res) => {
   const testItems = [
-    { name: "Chicken Bagel Platter", quantity: 3, allergen_text: "CONTAINS: Gluten, Milk, Sulphites" },
-    { name: "Beetroot Brownies", quantity: 2, allergen_text: "No listed allergens" },
+    { name: "Chicken Bagel Platter", quantity: 2, allergen_text: "CONTAINS: Gluten, Milk, Sulphites" },
+    { name: "Beetroot Brownies", quantity: 1, allergen_text: "No listed allergens" },
   ];
   const orderNumber = `#TEST-${Date.now().toString().slice(-4)}`;
   const orderDate = new Date().toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" });
   await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${orderNumber}, ${orderDate}, ${JSON.stringify(testItems)})`;
-  res.json({ queued: true, order: orderNumber, labels: 5, message: "Test job created — watch the phone!" });
+  res.json({ queued: true, order: orderNumber, labels: 3, message: "Test job created - watch the phone!" });
 });
+
+// Serves the print agent Python script directly to the phone
 app.get("/agent", (req, res) => {
-  res.type("text/plain").send(`#!/usr/bin/env python3
-import requests, socket, time
+  const script = `import requests, socket, time, struct
 from datetime import datetime
 
 RAILWAY_URL = "https://shopify-printing-production.up.railway.app"
-AGENT_SECRET = "vk-print-agent-2026"
+AGENT_SECRET = "vk-print-shopify-2013-secret"
 PRINTER_IP = "192.168.68.55"
 PRINTER_PORT = 9100
 POLL_SECONDS = 30
@@ -199,12 +200,37 @@ def mark_done(job_id):
     try: requests.post(f"{RAILWAY_URL}/jobs/{job_id}/done", headers=HEADERS, timeout=10)
     except: pass
 
+def build_escp_label(name, allergen, order_number, order_date, idx, total):
+    ESC = b'\\x1b'
+    lines = [
+        b'\\n',
+        b'  VANDAS KITCHEN\\n',
+        b'  ST PAULS - LONDON EC4\\n',
+        b'  --------------------------\\n',
+        b'\\n',
+        f'  {name[:32]}\\n'.encode('ascii','replace'),
+        b'\\n',
+        f'  ORDER: {order_number}\\n'.encode('ascii','replace'),
+        f'  DATE:  {order_date}\\n'.encode('ascii','replace'),
+        f'  LABEL: {idx} of {total}\\n'.encode('ascii','replace'),
+        b'\\n',
+        b'  --------------------------\\n',
+        f'  {allergen[:36]}\\n'.encode('ascii','replace'),
+        b'\\n',
+        b'  NUT-FREE * HALAL CERTIFIED\\n',
+        b'\\n',
+        b'\\n',
+        b'\\n',
+        b'\\x0c',
+    ]
+    return b''.join(lines)
+
 def send_to_printer(data):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(10)
             s.connect((PRINTER_IP, PRINTER_PORT))
-            s.sendall(data.encode("utf-8"))
+            s.sendall(data)
         return True
     except Exception as e:
         log(f"Printer error: {e}")
@@ -219,13 +245,11 @@ def process_job(job):
     idx = 1
     for item in items:
         for _ in range(item["quantity"]):
-            name = item["name"]
-            allergen = item["allergen_text"]
-            label = f"\\n  VANDA'S KITCHEN\\n  ST PAUL'S LONDON EC4\\n  --------------------------\\n\\n  {name[:32]}\\n\\n  ORDER: {order_number}\\n  DATE:  {order_date}\\n  LABEL: {idx} of {total}\\n\\n  --------------------------\\n  {allergen[:36]}\\n\\n  NUT-FREE * HALAL CERTIFIED\\n\\n\\n\\f"
+            label = build_escp_label(item["name"], item["allergen_text"], order_number, order_date, idx, total)
             ok = send_to_printer(label)
-            log(f"Label {idx}/{total}: {'OK' if ok else 'FAILED'} - {name[:30]}")
+            log(f"Label {idx}/{total}: {'OK' if ok else 'FAILED'} - {item['name'][:30]}")
             idx += 1
-            time.sleep(0.5)
+            time.sleep(1)
     return True
 
 def main():
@@ -243,8 +267,10 @@ def main():
         time.sleep(POLL_SECONDS)
 
 main()
-`);
+`;
+  res.type("text/plain").send(script);
 });
+
 setupDb().then(() => {
   app.listen(PORT, () => console.log(`VK Label Server running on port ${PORT}`));
 });
