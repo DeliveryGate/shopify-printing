@@ -23,7 +23,7 @@ from datetime import datetime
 # ── CONFIG — edit these ───────────────────────────────────────
 RAILWAY_URL    = "https://shopify-printing-production.up.railway.app"   # your Railway URL
 AGENT_SECRET   = "vk-print-shopify-2013-secret"
-PRINTER_IP     = "192.168.1.100"   # Brother's IP on your WiFi — find in printer settings
+PRINTER_IP     = "192.168.68.55"   # Brother's IP on your WiFi — find in printer settings
 PRINTER_PORT   = 9100              # Brother raw print port
 POLL_SECONDS   = 30
 # ─────────────────────────────────────────────────────────────
