@@ -172,7 +172,79 @@ app.get("/test", async (req, res) => {
   await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${orderNumber}, ${orderDate}, ${JSON.stringify(testItems)})`;
   res.json({ queued: true, order: orderNumber, labels: 5, message: "Test job created — watch the phone!" });
 });
+app.get("/agent", (req, res) => {
+  res.type("text/plain").send(`#!/usr/bin/env python3
+import requests, socket, time
+from datetime import datetime
 
+RAILWAY_URL = "https://shopify-printing-production.up.railway.app"
+AGENT_SECRET = "vk-print-agent-2026"
+PRINTER_IP = "192.168.68.55"
+PRINTER_PORT = 9100
+POLL_SECONDS = 30
+HEADERS = {"x-agent-secret": AGENT_SECRET}
+
+def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+def fetch_next_job():
+    try:
+        r = requests.get(f"{RAILWAY_URL}/jobs/next", headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        return r.json().get("job")
+    except Exception as e:
+        log(f"Poll failed: {e}")
+        return None
+
+def mark_done(job_id):
+    try: requests.post(f"{RAILWAY_URL}/jobs/{job_id}/done", headers=HEADERS, timeout=10)
+    except: pass
+
+def send_to_printer(data):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(10)
+            s.connect((PRINTER_IP, PRINTER_PORT))
+            s.sendall(data.encode("utf-8"))
+        return True
+    except Exception as e:
+        log(f"Printer error: {e}")
+        return False
+
+def process_job(job):
+    order_number = job["order_number"]
+    order_date = job["order_date"]
+    items = job["items"]
+    total = sum(i["quantity"] for i in items)
+    log(f"Printing {total} labels for {order_number}")
+    idx = 1
+    for item in items:
+        for _ in range(item["quantity"]):
+            name = item["name"]
+            allergen = item["allergen_text"]
+            label = f"\\n  VANDA'S KITCHEN\\n  ST PAUL'S LONDON EC4\\n  --------------------------\\n\\n  {name[:32]}\\n\\n  ORDER: {order_number}\\n  DATE:  {order_date}\\n  LABEL: {idx} of {total}\\n\\n  --------------------------\\n  {allergen[:36]}\\n\\n  NUT-FREE * HALAL CERTIFIED\\n\\n\\n\\f"
+            ok = send_to_printer(label)
+            log(f"Label {idx}/{total}: {'OK' if ok else 'FAILED'} - {name[:30]}")
+            idx += 1
+            time.sleep(0.5)
+    return True
+
+def main():
+    log("VK Label Agent started")
+    log(f"Railway: {RAILWAY_URL}")
+    log(f"Printer: {PRINTER_IP}:{PRINTER_PORT}")
+    while True:
+        job = fetch_next_job()
+        if job:
+            log(f"New job: {job['order_number']}")
+            process_job(job)
+            mark_done(job["id"])
+        else:
+            log("No jobs - sleeping")
+        time.sleep(POLL_SECONDS)
+
+main()
+`);
+});
 setupDb().then(() => {
   app.listen(PORT, () => console.log(`VK Label Server running on port ${PORT}`));
 });
