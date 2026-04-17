@@ -6,12 +6,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const sql = neon(process.env.DATABASE_URL);
 
-// ── Middleware ────────────────────────────────────────────────
-// Raw body needed for Shopify HMAC verification
 app.use("/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
-// ── DB Setup ──────────────────────────────────────────────────
 async function setupDb() {
   await sql`
     CREATE TABLE IF NOT EXISTS print_jobs (
@@ -26,13 +23,8 @@ async function setupDb() {
   console.log("✅ DB ready");
 }
 
-// ── Allergen matrix (source of truth) ────────────────────────
 const ALLERGEN_KEYS = ["celery","gluten","crustaceans","eggs","fish","lupin","milk","mustard","molluscs","sesame","soya","sulphites"];
-const ALLERGEN_LABELS = {
-  celery:"Celery", gluten:"Gluten", crustaceans:"Crustaceans", eggs:"Eggs",
-  fish:"Fish", lupin:"Lupin", milk:"Milk", mustard:"Mustard",
-  molluscs:"Molluscs", sesame:"Sesame", soya:"Soya", sulphites:"Sulphites"
-};
+const ALLERGEN_LABELS = {celery:"Celery",gluten:"Gluten",crustaceans:"Crustaceans",eggs:"Eggs",fish:"Fish",lupin:"Lupin",milk:"Milk",mustard:"Mustard",molluscs:"Molluscs",sesame:"Sesame",soya:"Soya",sulphites:"Sulphites"};
 
 const ALLERGEN_MATRIX = {
   "Avocado & Smoked Salmon Sourdough Toast Platter":{celery:0,gluten:1,crustaceans:0,eggs:0,fish:1,lupin:0,milk:0,mustard:0,molluscs:0,sesame:0,soya:0,sulphites:0},
@@ -97,9 +89,7 @@ const ALLERGEN_MATRIX = {
 };
 
 function getAllergens(productName) {
-  // Exact match first
   if (ALLERGEN_MATRIX[productName]) return ALLERGEN_MATRIX[productName];
-  // Fuzzy match — find closest product name
   const lower = productName.toLowerCase();
   const match = Object.keys(ALLERGEN_MATRIX).find(k => k.toLowerCase().includes(lower) || lower.includes(k.toLowerCase()));
   return match ? ALLERGEN_MATRIX[match] : null;
@@ -112,108 +102,66 @@ function getAllergenText(productName) {
   return contains.length > 0 ? `CONTAINS: ${contains.join(", ")}` : "No listed allergens";
 }
 
-// ── Shopify HMAC verification ─────────────────────────────────
 function verifyShopify(req) {
   const hmac = req.headers["x-shopify-hmac-sha256"];
-  if (!hmac || !process.env.SHOPIFY_WEBHOOK_SECRET) return true; // skip in dev
-  const hash = crypto
-    .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
-    .update(req.body)
-    .digest("base64");
+  if (!hmac || !process.env.SHOPIFY_WEBHOOK_SECRET) return true;
+  const hash = crypto.createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET).update(req.body).digest("base64");
   return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hmac));
 }
 
-// ── Routes ────────────────────────────────────────────────────
-
-// Health check
 app.get("/", (req, res) => res.json({ status: "ok", service: "VK Label Server" }));
 
-// Shopify webhook — orders/create
 app.post("/webhook/orders", async (req, res) => {
-  if (!verifyShopify(req)) {
-    return res.status(401).json({ error: "Invalid signature" });
-  }
-
+  if (!verifyShopify(req)) return res.status(401).json({ error: "Invalid signature" });
   try {
     const order = JSON.parse(req.body);
     const orderNumber = order.name || `#${order.order_number}`;
-    const orderDate = new Date(order.created_at).toLocaleDateString("en-GB", {
-      day: "2-digit", month: "short", year: "numeric"
-    });
-
-    // Build items array — one entry per line item with qty
+    const orderDate = new Date(order.created_at).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" });
     const items = (order.line_items || []).map(item => ({
       name: item.name,
       quantity: item.quantity,
-      allergenText: getAllergenText(item.name),
+      allergen_text: getAllergenText(item.name),
     }));
-
-    if (items.length === 0) {
-      return res.status(200).json({ message: "No line items, skipping" });
-    }
-
-    await sql`
-      INSERT INTO print_jobs (order_number, order_date, items)
-      VALUES (${orderNumber}, ${orderDate}, ${JSON.stringify(items)})
-    `;
-
-    console.log(`✅ Print job queued: ${orderNumber} — ${items.reduce((t,i) => t+i.quantity, 0)} labels`);
+    if (items.length === 0) return res.status(200).json({ message: "No line items" });
+    await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${orderNumber}, ${orderDate}, ${JSON.stringify(items)})`;
     res.status(200).json({ queued: true, order: orderNumber });
   } catch (err) {
-    console.error("Webhook error:", err);
     res.status(500).json({ error: "Internal error" });
   }
 });
 
-// Phone agent polls this — returns oldest pending job and marks it claimed
 app.get("/jobs/next", async (req, res) => {
-  const secret = req.headers["x-agent-secret"];
-  if (secret !== process.env.AGENT_SECRET) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
+  if (req.headers["x-agent-secret"] !== process.env.AGENT_SECRET) return res.status(401).json({ error: "Unauthorized" });
   try {
     const jobs = await sql`
-      UPDATE print_jobs
-      SET status = 'claimed'
-      WHERE id = (
-        SELECT id FROM print_jobs WHERE status = 'pending'
-        ORDER BY created_at ASC LIMIT 1
-      )
+      UPDATE print_jobs SET status = 'claimed'
+      WHERE id = (SELECT id FROM print_jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1)
       RETURNING *
     `;
-
-    if (jobs.length === 0) {
-      return res.json({ job: null });
-    }
-
-    res.json({ job: jobs[0] });
+    res.json({ job: jobs.length ? jobs[0] : null });
   } catch (err) {
-    console.error("Job fetch error:", err);
     res.status(500).json({ error: "Internal error" });
   }
 });
 
-// Phone agent marks job done
 app.post("/jobs/:id/done", async (req, res) => {
-  const secret = req.headers["x-agent-secret"];
-  if (secret !== process.env.AGENT_SECRET) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (req.headers["x-agent-secret"] !== process.env.AGENT_SECRET) return res.status(401).json({ error: "Unauthorized" });
   await sql`UPDATE print_jobs SET status = 'printed' WHERE id = ${req.params.id}`;
   res.json({ ok: true });
 });
 
-// Admin — view recent jobs
+app.post("/jobs/:id/reset", async (req, res) => {
+  if (req.headers["x-agent-secret"] !== process.env.AGENT_SECRET) return res.status(401).json({ error: "Unauthorized" });
+  await sql`UPDATE print_jobs SET status = 'pending' WHERE id = ${req.params.id}`;
+  res.json({ ok: true, message: "Job reset to pending" });
+});
+
 app.get("/jobs", async (req, res) => {
-  const secret = req.headers["x-agent-secret"];
-  if (secret !== process.env.AGENT_SECRET) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (req.headers["x-agent-secret"] !== process.env.AGENT_SECRET) return res.status(401).json({ error: "Unauthorized" });
   const jobs = await sql`SELECT * FROM print_jobs ORDER BY created_at DESC LIMIT 50`;
   res.json(jobs);
 });
-// Test endpoint — creates a fake order to test printing
+
 app.get("/test", async (req, res) => {
   const testItems = [
     { name: "Chicken Bagel Platter", quantity: 3, allergen_text: "CONTAINS: Gluten, Milk, Sulphites" },
@@ -225,7 +173,6 @@ app.get("/test", async (req, res) => {
   res.json({ queued: true, order: orderNumber, labels: 5, message: "Test job created — watch the phone!" });
 });
 
-// ── Start ─────────────────────────────────────────────────────
 setupDb().then(() => {
-  app.listen(PORT, () => console.log(`🚀 VK Label Server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`VK Label Server running on port ${PORT}`));
 });
