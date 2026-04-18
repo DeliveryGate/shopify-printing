@@ -173,17 +173,15 @@ app.get("/test", async (req, res) => {
   res.json({ queued: true, order: orderNumber, labels: 3, message: "Test job created!" });
 });
 
-// Manually queue any order by number and items for reprinting
 app.post("/manual", async (req, res) => {
   const { order_number, order_date, items } = req.body;
-  if (!order_number || !items) return res.status(400).json({ error: "Missing order_number or items" });
+  if (!order_number || !items) return res.status(400).json({ error: "Missing fields" });
   await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${order_number}, ${order_date || new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}, ${JSON.stringify(items)})`;
   res.json({ queued: true, order: order_number });
 });
 
-// Serves updated print agent — bigger labels, logo
 app.get("/agent", (req, res) => {
-  const script = `import os, sys, subprocess, requests, socket, time, io
+  const script = `import os, sys, subprocess, requests, time, io
 from datetime import datetime
 
 def install(pkg):
@@ -192,7 +190,6 @@ def install(pkg):
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:
-    print("Installing Pillow...")
     install("Pillow")
     from PIL import Image, ImageDraw, ImageFont
 
@@ -201,7 +198,6 @@ try:
     from brother_ql.backends.helpers import send
     from brother_ql.raster import BrotherQLRaster
 except ImportError:
-    print("Installing brother_ql...")
     install("brother-ql")
     from brother_ql.conversion import convert
     from brother_ql.backends.helpers import send
@@ -234,92 +230,93 @@ def mark_done(job_id):
 def get_logo():
     try:
         r = requests.get(LOGO_URL, timeout=10)
-        logo = Image.open(io.BytesIO(r.content)).convert("RGBA")
-        logo.thumbnail((300, 60), Image.LANCZOS)
+        logo = Image.open(io.BytesIO(r.content)).convert("L")
+        logo.thumbnail((280, 70), Image.LANCZOS)
         return logo
     except:
         return None
 
-def make_label_image(name, allergen, order_number, order_date, idx, total):
-    W, H = 696, 320
-    img = Image.new("RGB", (W, H), "white")
-    draw = ImageDraw.Draw(img)
-
-    # Try to load fonts — fall back to default if unavailable
-    try:
-        font_xl  = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 44)
-        font_lg  = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 34)
-        font_med = ImageFont.truetype("/system/fonts/DroidSans.ttf", 26)
-        font_sml = ImageFont.truetype("/system/fonts/DroidSans.ttf", 20)
-    except:
-        font_xl = font_lg = font_med = font_sml = ImageFont.load_default()
-
-    # Header bar
-    draw.rectangle([0, 0, W, 52], fill="black")
-
-    # Try logo
-    logo = get_logo()
-    if logo:
-        logo_rgb = Image.new("RGB", logo.size, "black")
-        logo_rgb.paste(logo, mask=logo.split()[3] if logo.mode == "RGBA" else None)
-        logo_inv = Image.eval(logo_rgb, lambda x: 255 - x)
-        img.paste(logo_inv, (8, 6))
-    else:
-        draw.text((10, 10), "VANDA'S KITCHEN", fill="white", font=font_lg)
-
-    # Order info top right
-    draw.text((W - 200, 8), f"{order_number}", fill="white", font=font_med)
-    draw.text((W - 200, 30), f"Label {idx}/{total}", fill="white", font=font_sml)
-
-    # Product name — large
-    y = 62
-    name_lines = []
-    words = name.split()
+def wrap_text(text, max_chars):
+    words = text.split()
+    lines = []
     line = ""
     for word in words:
         test = (line + " " + word).strip()
-        if len(test) <= 28:
+        if len(test) <= max_chars:
             line = test
         else:
-            name_lines.append(line)
+            if line:
+                lines.append(line)
             line = word
-    name_lines.append(line)
+    if line:
+        lines.append(line)
+    return lines
 
-    for l in name_lines[:2]:
-        draw.text((10, y), l, fill="black", font=font_xl)
-        y += 50
+def make_label_image(name, allergen, order_number, order_date, idx, total):
+    W = 696
+    H = 900  # Tall label like Just Eat
+    img = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(img)
 
-    # Date
-    draw.text((10, y + 4), f"Date: {order_date}", fill="#444444", font=font_med)
-    y += 36
+    try:
+        font_xxl = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 72)
+        font_xl  = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 56)
+        font_lg  = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 42)
+        font_med = ImageFont.truetype("/system/fonts/DroidSans.ttf", 34)
+        font_sml = ImageFont.truetype("/system/fonts/DroidSans.ttf", 26)
+        font_xs  = ImageFont.truetype("/system/fonts/DroidSans.ttf", 22)
+    except:
+        font_xxl = font_xl = font_lg = font_med = font_sml = font_xs = ImageFont.load_default()
 
-    # Divider
-    draw.line([10, y, W-10, y], fill="black", width=2)
-    y += 8
+    y = 20
 
-    # Allergen — large and bold
-    allergen_color = (180, 0, 0) if "CONTAINS" in allergen else (0, 140, 0)
-    # Split allergen text if too long
-    if len(allergen) <= 38:
-        draw.text((10, y), allergen, fill=allergen_color, font=font_lg)
-        y += 40
+    # Logo top left
+    logo = get_logo()
+    if logo:
+        img.paste(logo, (16, y))
+        logo_h = logo.size[1]
     else:
-        parts = allergen.split(": ", 1)
-        if len(parts) == 2:
-            draw.text((10, y), parts[0] + ":", fill=allergen_color, font=font_lg)
-            y += 38
-            draw.text((10, y), parts[1][:42], fill=allergen_color, font=font_med)
-            if len(parts[1]) > 42:
-                y += 30
-                draw.text((10, y), parts[1][42:84], fill=allergen_color, font=font_med)
-            y += 32
-        else:
-            draw.text((10, y), allergen[:42], fill=allergen_color, font=font_med)
-            y += 32
+        draw.text((16, y), "VANDA'S KITCHEN", fill="black", font=font_lg)
+        logo_h = 50
+
+    # Label count top right
+    draw.text((W - 160, y + 10), f"Label {idx}/{total}", fill="#555555", font=font_sml)
+
+    y += logo_h + 20
+    draw.line([16, y, W-16, y], fill="#cccccc", width=2)
+    y += 20
+
+    # Product name — very large
+    name_lines = wrap_text(name, 18)
+    for line in name_lines[:2]:
+        draw.text((16, y), line, fill="black", font=font_xxl)
+        y += 82
+    y += 10
+
+    # Order + Date
+    draw.text((16, y), f"Order: {order_number}", fill="#333333", font=font_med)
+    y += 44
+    draw.text((16, y), f"Date: {order_date}", fill="#333333", font=font_med)
+    y += 56
+
+    draw.line([16, y, W-16, y], fill="#cccccc", width=2)
+    y += 24
+
+    # Allergens — large and prominent
+    allergen_color = (180, 0, 0) if "CONTAINS" in allergen else (0, 140, 0)
+    allergen_lines = wrap_text(allergen, 22)
+    for line in allergen_lines[:3]:
+        draw.text((16, y), line, fill=allergen_color, font=font_lg)
+        y += 52
+    y += 16
+
+    draw.line([16, y, W-16, y], fill="#cccccc", width=2)
+    y += 20
 
     # Footer
-    draw.line([10, H-34, W-10, H-34], fill="black", width=1)
-    draw.text((10, H-28), "100% NUT-FREE KITCHEN  *  HALAL CERTIFIED  *  5-STAR HYGIENE", fill="black", font=font_sml)
+    draw.text((16, y), "100% NUT-FREE  *  HALAL CERTIFIED  *  5-STAR HYGIENE", fill="#444444", font=font_xs)
+    y += 32
+    draw.text((16, y), "42-44 Carter Lane, London EC4V 5EA", fill="#444444", font=font_xs)
 
     return img
 
@@ -352,8 +349,8 @@ def process_job(job):
             time.sleep(1)
 
 def main():
-    log("VK Label Agent v3 started")
-    log(f"Printer: {PRINTER_IP} Model: {PRINTER_MODEL}")
+    log("VK Label Agent v4 started")
+    log(f"Printer: {PRINTER_IP}")
     while True:
         job = fetch_next_job()
         if job:
