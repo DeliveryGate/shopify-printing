@@ -20,7 +20,7 @@ async function setupDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
-  console.log("✅ DB ready");
+  console.log("DB ready");
 }
 
 const ALLERGEN_KEYS = ["celery","gluten","crustaceans","eggs","fish","lupin","milk","mustard","molluscs","sesame","soya","sulphites"];
@@ -173,15 +173,38 @@ app.get("/test", async (req, res) => {
   res.json({ queued: true, order: orderNumber, labels: 3, message: "Test job created - watch the phone!" });
 });
 
-// Serves the print agent Python script directly to the phone
+// Serves updated print agent to the phone
 app.get("/agent", (req, res) => {
-  const script = `import requests, socket, time, struct
+  const script = `import os, sys, subprocess, requests, socket, time
 from datetime import datetime
+
+# Install dependencies if needed
+def install(pkg):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    print("Installing Pillow...")
+    install("Pillow")
+    from PIL import Image, ImageDraw, ImageFont
+
+try:
+    from brother_ql.conversion import convert
+    from brother_ql.backends.helpers import send
+    from brother_ql.raster import BrotherQLRaster
+except ImportError:
+    print("Installing brother_ql...")
+    install("brother-ql")
+    from brother_ql.conversion import convert
+    from brother_ql.backends.helpers import send
+    from brother_ql.raster import BrotherQLRaster
 
 RAILWAY_URL = "https://shopify-printing-production.up.railway.app"
 AGENT_SECRET = "vk-print-shopify-2013-secret"
 PRINTER_IP = "192.168.68.55"
-PRINTER_PORT = 9100
+PRINTER_MODEL = "QL-820NWB"
+LABEL_TYPE = "62"
 POLL_SECONDS = 30
 HEADERS = {"x-agent-secret": AGENT_SECRET}
 
@@ -200,40 +223,43 @@ def mark_done(job_id):
     try: requests.post(f"{RAILWAY_URL}/jobs/{job_id}/done", headers=HEADERS, timeout=10)
     except: pass
 
-def build_escp_label(name, allergen, order_number, order_date, idx, total):
-    ESC = b'\\x1b'
-    lines = [
-        b'\\n',
-        b'  VANDAS KITCHEN\\n',
-        b'  ST PAULS - LONDON EC4\\n',
-        b'  --------------------------\\n',
-        b'\\n',
-        f'  {name[:32]}\\n'.encode('ascii','replace'),
-        b'\\n',
-        f'  ORDER: {order_number}\\n'.encode('ascii','replace'),
-        f'  DATE:  {order_date}\\n'.encode('ascii','replace'),
-        f'  LABEL: {idx} of {total}\\n'.encode('ascii','replace'),
-        b'\\n',
-        b'  --------------------------\\n',
-        f'  {allergen[:36]}\\n'.encode('ascii','replace'),
-        b'\\n',
-        b'  NUT-FREE * HALAL CERTIFIED\\n',
-        b'\\n',
-        b'\\n',
-        b'\\n',
-        b'\\x0c',
-    ]
-    return b''.join(lines)
-
-def send_to_printer(data):
+def make_label_image(name, allergen, order_number, order_date, idx, total):
+    W, H = 696, 270
+    img = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(img)
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(10)
-            s.connect((PRINTER_IP, PRINTER_PORT))
-            s.sendall(data)
+        font_big = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 28)
+        font_med = ImageFont.truetype("/system/fonts/DroidSans.ttf", 22)
+        font_sml = ImageFont.truetype("/system/fonts/DroidSans.ttf", 18)
+    except:
+        font_big = ImageFont.load_default()
+        font_med = font_big
+        font_sml = font_big
+
+    draw.rectangle([0, 0, W, 40], fill="black")
+    draw.text((10, 8), "VANDA'S KITCHEN  |  ST PAUL'S LONDON EC4", fill="white", font=font_med)
+    draw.text((10, 50), name[:55], fill="black", font=font_big)
+    if len(name) > 55:
+        draw.text((10, 85), name[55:], fill="black", font=font_big)
+    draw.text((10, 125), f"Order: {order_number}   Date: {order_date}   Label {idx}/{total}", fill="black", font=font_sml)
+    draw.line([10, 150, W-10, 150], fill="black", width=1)
+    allergen_color = (180, 0, 0) if "CONTAINS" in allergen else (0, 120, 0)
+    draw.text((10, 158), allergen, fill=allergen_color, font=font_med)
+    draw.line([10, 220, W-10, 220], fill="black", width=1)
+    draw.text((10, 228), "100% NUT-FREE KITCHEN  *  HALAL CERTIFIED", fill="black", font=font_sml)
+    return img
+
+def print_label(img):
+    try:
+        qlr = BrotherQLRaster(PRINTER_MODEL)
+        qlr.exception_on_warning = False
+        convert(qlr=qlr, images=[img], label=LABEL_TYPE, rotate="0", threshold=70.0,
+                dither=False, compress=False, red=False, dpi_600=False, hq=True, cut=True)
+        send(instructions=qlr.data, printer_identifier=f"tcp://{PRINTER_IP}:9100",
+             backend_identifier="network", blocking=True)
         return True
     except Exception as e:
-        log(f"Printer error: {e}")
+        log(f"Print error: {e}")
         return False
 
 def process_job(job):
@@ -245,17 +271,15 @@ def process_job(job):
     idx = 1
     for item in items:
         for _ in range(item["quantity"]):
-            label = build_escp_label(item["name"], item["allergen_text"], order_number, order_date, idx, total)
-            ok = send_to_printer(label)
+            img = make_label_image(item["name"], item["allergen_text"], order_number, order_date, idx, total)
+            ok = print_label(img)
             log(f"Label {idx}/{total}: {'OK' if ok else 'FAILED'} - {item['name'][:30]}")
             idx += 1
             time.sleep(1)
-    return True
 
 def main():
-    log("VK Label Agent started")
-    log(f"Railway: {RAILWAY_URL}")
-    log(f"Printer: {PRINTER_IP}:{PRINTER_PORT}")
+    log("VK Label Agent v2 started")
+    log(f"Printer: {PRINTER_IP} Model: {PRINTER_MODEL}")
     while True:
         job = fetch_next_job()
         if job:
