@@ -170,15 +170,22 @@ app.get("/test", async (req, res) => {
   const orderNumber = `#TEST-${Date.now().toString().slice(-4)}`;
   const orderDate = new Date().toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" });
   await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${orderNumber}, ${orderDate}, ${JSON.stringify(testItems)})`;
-  res.json({ queued: true, order: orderNumber, labels: 3, message: "Test job created - watch the phone!" });
+  res.json({ queued: true, order: orderNumber, labels: 3, message: "Test job created!" });
 });
 
-// Serves updated print agent to the phone
+// Manually queue any order by number and items for reprinting
+app.post("/manual", async (req, res) => {
+  const { order_number, order_date, items } = req.body;
+  if (!order_number || !items) return res.status(400).json({ error: "Missing order_number or items" });
+  await sql`INSERT INTO print_jobs (order_number, order_date, items) VALUES (${order_number}, ${order_date || new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}, ${JSON.stringify(items)})`;
+  res.json({ queued: true, order: order_number });
+});
+
+// Serves updated print agent — bigger labels, logo
 app.get("/agent", (req, res) => {
-  const script = `import os, sys, subprocess, requests, socket, time
+  const script = `import os, sys, subprocess, requests, socket, time, io
 from datetime import datetime
 
-# Install dependencies if needed
 def install(pkg):
     subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
 
@@ -207,6 +214,7 @@ PRINTER_MODEL = "QL-820NWB"
 LABEL_TYPE = "62"
 POLL_SECONDS = 30
 HEADERS = {"x-agent-secret": AGENT_SECRET}
+LOGO_URL = "https://www.vandaskitchen.co.uk/cdn/shop/files/Landscape_logo_black.jpg"
 
 def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
@@ -223,30 +231,96 @@ def mark_done(job_id):
     try: requests.post(f"{RAILWAY_URL}/jobs/{job_id}/done", headers=HEADERS, timeout=10)
     except: pass
 
+def get_logo():
+    try:
+        r = requests.get(LOGO_URL, timeout=10)
+        logo = Image.open(io.BytesIO(r.content)).convert("RGBA")
+        logo.thumbnail((300, 60), Image.LANCZOS)
+        return logo
+    except:
+        return None
+
 def make_label_image(name, allergen, order_number, order_date, idx, total):
-    W, H = 696, 270
+    W, H = 696, 320
     img = Image.new("RGB", (W, H), "white")
     draw = ImageDraw.Draw(img)
-    try:
-        font_big = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 28)
-        font_med = ImageFont.truetype("/system/fonts/DroidSans.ttf", 22)
-        font_sml = ImageFont.truetype("/system/fonts/DroidSans.ttf", 18)
-    except:
-        font_big = ImageFont.load_default()
-        font_med = font_big
-        font_sml = font_big
 
-    draw.rectangle([0, 0, W, 40], fill="black")
-    draw.text((10, 8), "VANDA'S KITCHEN  |  ST PAUL'S LONDON EC4", fill="white", font=font_med)
-    draw.text((10, 50), name[:55], fill="black", font=font_big)
-    if len(name) > 55:
-        draw.text((10, 85), name[55:], fill="black", font=font_big)
-    draw.text((10, 125), f"Order: {order_number}   Date: {order_date}   Label {idx}/{total}", fill="black", font=font_sml)
-    draw.line([10, 150, W-10, 150], fill="black", width=1)
-    allergen_color = (180, 0, 0) if "CONTAINS" in allergen else (0, 120, 0)
-    draw.text((10, 158), allergen, fill=allergen_color, font=font_med)
-    draw.line([10, 220, W-10, 220], fill="black", width=1)
-    draw.text((10, 228), "100% NUT-FREE KITCHEN  *  HALAL CERTIFIED", fill="black", font=font_sml)
+    # Try to load fonts — fall back to default if unavailable
+    try:
+        font_xl  = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 44)
+        font_lg  = ImageFont.truetype("/system/fonts/DroidSans-Bold.ttf", 34)
+        font_med = ImageFont.truetype("/system/fonts/DroidSans.ttf", 26)
+        font_sml = ImageFont.truetype("/system/fonts/DroidSans.ttf", 20)
+    except:
+        font_xl = font_lg = font_med = font_sml = ImageFont.load_default()
+
+    # Header bar
+    draw.rectangle([0, 0, W, 52], fill="black")
+
+    # Try logo
+    logo = get_logo()
+    if logo:
+        logo_rgb = Image.new("RGB", logo.size, "black")
+        logo_rgb.paste(logo, mask=logo.split()[3] if logo.mode == "RGBA" else None)
+        logo_inv = Image.eval(logo_rgb, lambda x: 255 - x)
+        img.paste(logo_inv, (8, 6))
+    else:
+        draw.text((10, 10), "VANDA'S KITCHEN", fill="white", font=font_lg)
+
+    # Order info top right
+    draw.text((W - 200, 8), f"{order_number}", fill="white", font=font_med)
+    draw.text((W - 200, 30), f"Label {idx}/{total}", fill="white", font=font_sml)
+
+    # Product name — large
+    y = 62
+    name_lines = []
+    words = name.split()
+    line = ""
+    for word in words:
+        test = (line + " " + word).strip()
+        if len(test) <= 28:
+            line = test
+        else:
+            name_lines.append(line)
+            line = word
+    name_lines.append(line)
+
+    for l in name_lines[:2]:
+        draw.text((10, y), l, fill="black", font=font_xl)
+        y += 50
+
+    # Date
+    draw.text((10, y + 4), f"Date: {order_date}", fill="#444444", font=font_med)
+    y += 36
+
+    # Divider
+    draw.line([10, y, W-10, y], fill="black", width=2)
+    y += 8
+
+    # Allergen — large and bold
+    allergen_color = (180, 0, 0) if "CONTAINS" in allergen else (0, 140, 0)
+    # Split allergen text if too long
+    if len(allergen) <= 38:
+        draw.text((10, y), allergen, fill=allergen_color, font=font_lg)
+        y += 40
+    else:
+        parts = allergen.split(": ", 1)
+        if len(parts) == 2:
+            draw.text((10, y), parts[0] + ":", fill=allergen_color, font=font_lg)
+            y += 38
+            draw.text((10, y), parts[1][:42], fill=allergen_color, font=font_med)
+            if len(parts[1]) > 42:
+                y += 30
+                draw.text((10, y), parts[1][42:84], fill=allergen_color, font=font_med)
+            y += 32
+        else:
+            draw.text((10, y), allergen[:42], fill=allergen_color, font=font_med)
+            y += 32
+
+    # Footer
+    draw.line([10, H-34, W-10, H-34], fill="black", width=1)
+    draw.text((10, H-28), "100% NUT-FREE KITCHEN  *  HALAL CERTIFIED  *  5-STAR HYGIENE", fill="black", font=font_sml)
+
     return img
 
 def print_label(img):
@@ -278,7 +352,7 @@ def process_job(job):
             time.sleep(1)
 
 def main():
-    log("VK Label Agent v2 started")
+    log("VK Label Agent v3 started")
     log(f"Printer: {PRINTER_IP} Model: {PRINTER_MODEL}")
     while True:
         job = fetch_next_job()
