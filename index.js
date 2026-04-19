@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import { neon } from "@neondatabase/serverless";
+import fs from "fs";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -181,10 +182,9 @@ app.post("/manual", async (req, res) => {
 });
 
 app.get("/agent", (req, res) => {
-  const fs = require("fs");
-  const path = require("path");
   try {
-    const script = fs.readFileSync(path.join(__dirname, "print_agent.py"), "utf8");
+    const url = new URL("./print_agent.py", import.meta.url);
+    const script = fs.readFileSync(url, "utf8");
     res.type("text/plain").send(script);
   } catch (e) {
     res.status(500).type("text/plain").send("Failed to read print_agent.py: " + e.message);
